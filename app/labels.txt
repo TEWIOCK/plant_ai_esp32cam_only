@@ -1,0 +1,5 @@
+healthy
+leaf_blight
+leaf_spot
+rust
+mildew
