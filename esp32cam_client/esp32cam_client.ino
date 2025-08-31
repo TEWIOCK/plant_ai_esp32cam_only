@@ -1,18 +1,14 @@
-// ESP32-CAM -> FastAPI /predict over Wi-Fi (phone hotspot OK)
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <WiFiClient.h>
 
-// ===== Wi-Fi (set to your phone hotspot) =====
 #define WIFI_SSID   "PHONE_HOTSPOT_SSID"
 #define WIFI_PASS   "PHONE_HOTSPOT_PASSWORD"
 
-// ===== Server (device connected to same hotspot) =====
-#define SERVER_IP   "192.168.43.100"  // change to laptop/server IP on hotspot
+#define SERVER_IP   "192.168.43.100"  // Change to server IP
 #define SERVER_PORT 8000
 #define POST_PATH   "/predict"
 
-// ==== AI Thinker pinout ====
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
@@ -31,7 +27,6 @@
 #define PCLK_GPIO_NUM     22
 
 static const char *BOUNDARY = "----ESP32CAMFormBoundary";
-static const int  TIMEOUT_MS = 8000;
 
 bool initCamera() {
   camera_config_t config;
@@ -55,21 +50,14 @@ bool initCamera() {
   config.pin_reset    = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size   = FRAMESIZE_VGA;   // QVGA/VGA
-  config.jpeg_quality = 12;              // 10-20
+  config.frame_size   = FRAMESIZE_VGA;
+  config.jpeg_quality = 12;
   config.fb_count     = 2;
-
-  esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK) {
-    Serial.printf("Camera init failed: 0x%x\n", err);
-    return false;
-  }
-  return true;
+  return (esp_camera_init(&config) == ESP_OK);
 }
 
 void ensureWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
-  WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.printf("Connecting WiFi %s", WIFI_SSID);
   uint32_t t0 = millis();
@@ -77,12 +65,6 @@ void ensureWiFi() {
     delay(300); Serial.print(".");
   }
   Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("WiFi OK, IP: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("WiFi fail, retry later.");
-  }
 }
 
 bool postImage(const uint8_t* data, size_t len) {
@@ -91,14 +73,11 @@ bool postImage(const uint8_t* data, size_t len) {
     Serial.println("Connect server failed");
     return false;
   }
-  client.setTimeout(TIMEOUT_MS);
-
   String head = String("--") + BOUNDARY + "\r\n"
                 "Content-Disposition: form-data; name=\"file\"; filename=\"frame.jpg\"\r\n"
                 "Content-Type: image/jpeg\r\n\r\n";
   String tail = String("\r\n--") + BOUNDARY + "--\r\n";
   size_t contentLength = head.length() + len + tail.length();
-
   client.printf("POST %s HTTP/1.1\r\n", POST_PATH);
   client.printf("Host: %s:%d\r\n", SERVER_IP, SERVER_PORT);
   client.println("Connection: close");
@@ -107,31 +86,17 @@ bool postImage(const uint8_t* data, size_t len) {
   client.print(head);
   client.write(data, len);
   client.print(tail);
-
-  String payload;
   while (client.connected() || client.available()) {
-    String chunk = client.readStringUntil('\n');
-    payload += chunk;
+    String line = client.readStringUntil('\n');
+    if (line.startsWith("{")) Serial.println("[AI RESULT] " + line);
   }
   client.stop();
-
-  int s = payload.indexOf('{');
-  int e = payload.lastIndexOf('}');
-  if (s >= 0 && e > s) {
-    String json = payload.substring(s, e + 1);
-    Serial.print("[AI RESULT] ");
-    Serial.println(json);
-  } else {
-    Serial.println("No JSON in response");
-    Serial.println(payload);
-  }
   return true;
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(200);
-  initCamera();
+  if (!initCamera()) { Serial.println("Camera init failed"); while(1); }
   ensureWiFi();
 }
 
@@ -142,10 +107,7 @@ void loop() {
     if (fb && fb->format == PIXFORMAT_JPEG) {
       postImage(fb->buf, fb->len);
       esp_camera_fb_return(fb);
-    } else {
-      Serial.println("Capture failed");
-      if (fb) esp_camera_fb_return(fb);
     }
   }
-  delay(3000); // every 3s
+  delay(5000);
 }

@@ -1,53 +1,35 @@
-# ESP32-CAM → Phone Hotspot → Server (Plant Disease)
+# ESP32-CAM → Wi-Fi (Phone Hotspot) → Server → LINE Alert
 
-ภาพรวม
+## Flow
 ```
-ESP32-CAM  --Wi‑Fi (Phone Hotspot)-->  FastAPI Server  --> JSON {label, score, healthy}
+ESP32-CAM  --Wi-Fi-->  FastAPI Server  --LINE Notify-->  User
 ```
 
-## 1) Server
+## 1) Setup Server
 ```bash
 python -m venv venv
-# Windows: venv\Scripts\activate
-# macOS/Linux: source venv/bin/activate
-
-pip install -r requirements-tflite-runtime.txt   # เบา (แนะนำ)
-# หรือ: pip install -r requirements-tf.txt      # เต็ม
-
+source venv/bin/activate   # หรือ venv\Scripts\activate บน Windows
+pip install -r requirements.txt
 uvicorn app.server:app --host 0.0.0.0 --port 8000
-# เปิด http://<SERVER_IP>:8000/docs
 ```
-- ถ้ามีโมเดล `model.tflite` ให้วางที่ `app/model.tflite` และแก้ `labels.txt`
-- ถ้าไม่มีโมเดล ระบบจะใช้ heuristic “ดูความเขียว” เพื่อลองระบบให้ก่อน
+- แก้ `LINE_TOKEN` ใน `app/server.py` เป็น Token ที่ได้จาก [LINE Notify](https://notify-bot.line.me/my/)
 
-## 2) เชื่อมต่อผ่าน Hotspot
-- เปิด **Phone Hotspot** และจด `SSID` / `Password`  
-- ให้ **คอมพ์/โน้ตบุ๊ก** ที่รัน server **เชื่อมเข้า Hotspot เดียวกัน**  
-- ดู IP เครื่องเซิร์ฟเวอร์ (เช่น 192.168.43.100 บน Android) แล้วนำไปใส่ในสเก็ตช์
+## 2) Setup ESP32-CAM
+- เปิด `esp32cam_client/esp32cam_client.ino`
+- ตั้งค่า `WIFI_SSID`, `WIFI_PASS` = Hotspot มือถือ
+- ตั้ง `SERVER_IP` = IP ของคอมพ์ที่รัน server (ดูจาก `ipconfig`/`ifconfig`)
+- เลือกบอร์ด: **AI Thinker ESP32-CAM**
+- อัปโหลด (ต่อ IO0 → GND ขณะอัปโหลด แล้วรีเซ็ต)
 
-## 3) ESP32-CAM
-- เปิด `esp32cam_client/esp32cam_client.ino` ใน Arduino IDE
-- ตั้งค่า:
-  - `WIFI_SSID` = ชื่อ Hotspot
-  - `WIFI_PASS` = รหัส Hotspot
-  - `SERVER_IP` = IP ของคอมพ์ที่รันเซิร์ฟเวอร์ (ซึ่งต่อ Hotspot เดียวกัน)
-- บอร์ด: `AI Thinker ESP32-CAM`  
-- อัปโหลด (ต่อ `IO0 -> GND` เพื่อเข้าโหมดแฟลช) แล้ว **รีเซ็ต**  
-- เปิด Serial Monitor จะเห็นผล JSON ที่ส่งกลับจาก `/predict`
+## 3) ทำงาน
+- ESP32-CAM จะถ่ายรูปทุก ๆ 5 วินาที → ส่งไปที่ `/predict`
+- Server จะวิเคราะห์โรค (heuristic หรือโมเดล TFLite)
+- ถ้าเจอว่าใบพืชอาจเป็นโรค → Server จะส่งแจ้งเตือน LINE:
+  - ข้อความบอก label + score
+  - แนบรูปถ่าย
 
-## 4) ปรับแต่งคุณภาพ/ความเร็ว
-- ลด `frame_size` เป็น `QVGA` หรือเพิ่ม `jpeg_quality` เพื่อลดขนาดไฟล์ → ส่งเร็วขึ้น
-- เพิ่มช่วงส่ง `delay()` หากเซิร์ฟเวอร์รับไม่ทัน
-
-## 5) API ผลลัพธ์
-`POST /predict` (multipart/form-data, field `file`) → ตอบกลับ
-```json
-{ "label": "healthy|disease_x", "score": 0.92, "healthy": true, "latency_ms": 120.5, "w": 640, "h": 480 }
+## Example LINE Alert
 ```
-
-## Troubleshooting
-- ต่อ Hotspot แล้ว **ESP32-CAM ควรเห็น IP ของตัวเอง** ใน Serial; ถ้าไม่ ข้อมูล SSID/PASS อาจผิด
-- ถ้า `Connect server failed` ให้ตรวจ `SERVER_IP` และไฟร์วอลล์ Windows
-- ภาพไม่ขึ้นหรือดีเลย์สูง: ลดความละเอียด/เพิ่มการบีบอัด
-
-โชคดีครับ!
+⚠️ พบพืชอาจป่วย: possibly_diseased (score=0.72)
+```
+(พร้อมรูปจริงที่ ESP32-CAM ถ่าย)

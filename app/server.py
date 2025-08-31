@@ -1,52 +1,58 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import requests, io, time, os
 from PIL import Image
-import numpy as np, io, os, time
+import numpy as np
 
-app = FastAPI(title="Plant Disease API (ESP32-CAM only)")
+# ===== LINE Notify token (create at https://notify-bot.line.me/my/) =====
+LINE_TOKEN = "YOUR_LINE_NOTIFY_TOKEN"
+
+app = FastAPI(title="Plant Disease API + LINE Alert")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-MODEL_PATH = "app/model.tflite"
-USE_TFLITE = os.path.exists(MODEL_PATH)
-if USE_TFLITE:
+def send_line_message(msg: str, img_bytes: bytes = None):
+    url = "https://notify-api.line.me/api/notify"
+    headers = {"Authorization": f"Bearer {LINE_TOKEN}"}
+    files = {"imageFile": ("leaf.jpg", img_bytes, "image/jpeg")} if img_bytes else None
+    data = {"message": msg}
     try:
-        from tensorflow.lite.python.interpreter import Interpreter
-    except Exception:
-        from tflite_runtime.interpreter import Interpreter
-    interpreter = Interpreter(model_path=MODEL_PATH); interpreter.allocate_tensors()
-    in_det = interpreter.get_input_details(); out_det = interpreter.get_output_details()
+        r = requests.post(url, headers=headers, data=data, files=files)
+        print("LINE response:", r.status_code, r.text)
+    except Exception as e:
+        print("LINE send error:", e)
 
-def preprocess(img, in_det):
-    H = in_det[0]['shape'][1]; W = in_det[0]['shape'][2]
-    x = img.convert("RGB").resize((W,H))
-    arr = np.array(x, dtype=np.float32) / 255.0
-    return np.expand_dims(arr, 0)
+def heuristic_check(img: Image.Image):
+    small = img.convert("RGB").resize((128,128))
+    arr = np.array(small).astype(np.float32)
+    r,g,b = arr[...,0], arr[...,1], arr[...,2]
+    green_ratio = float(np.mean(g / (r+b+1e-6)))
+    healthy = green_ratio >= 0.6
+    label = "healthy" if healthy else "possibly_diseased"
+    score = min(0.99, max(0.01, (green_ratio-0.4)/0.5))
+    return label, score, healthy
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    t0 = time.time()
     raw = await file.read()
     try:
         img = Image.open(io.BytesIO(raw))
     except Exception:
-        return JSONResponse(status_code=400, content={"error":"invalid image"})
-    if USE_TFLITE:
-        arr = preprocess(img, in_det)
-        interpreter.set_tensor(in_det[0]['index'], arr)
-        interpreter.invoke()
-        preds = interpreter.get_tensor(out_det[0]['index'])[0]
-        idx = int(np.argmax(preds)); score=float(preds[idx])
-        label=f"class_{idx}"
-        healthy = "healthy" in label
-    else:
-        # heuristic (green ratio)
-        small = img.convert("RGB").resize((128,128))
-        arr = np.asarray(small).astype(np.float32)
-        r,g,b = arr[...,0], arr[...,1], arr[...,2]
-        green_ratio = float(np.mean(g / (r+b+1e-6)))
-        healthy = green_ratio >= 0.6
-        label = "healthy(heuristic)" if healthy else "possibly_diseased(heuristic)"
-        score = min(0.99, max(0.01, (green_ratio-0.4)/0.5))
-    return {"label":label, "score":round(score,4), "healthy":bool(healthy),
-            "latency_ms": round((time.time()-t0)*1000,1), "w": img.width, "h": img.height}
+        return JSONResponse(status_code=400, content={"error": "invalid image"})
+
+    t0 = time.time()
+    label, score, healthy = heuristic_check(img)
+
+    result = {
+        "label": label,
+        "score": round(score,4),
+        "healthy": healthy,
+        "latency_ms": round((time.time()-t0)*1000,1),
+        "w": img.width, "h": img.height
+    }
+
+    # ถ้าเจอโรค → ส่งแจ้งเตือน LINE พร้อมรูป
+    if not healthy:
+        send_line_message(f"⚠️ พบพืชอาจป่วย: {label} (score={score:.2f})", raw)
+
+    return result
